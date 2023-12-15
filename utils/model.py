@@ -1,0 +1,1 @@
+num_params = lambda model: sum(p.numel() for p in model.parameters())
