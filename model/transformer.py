@@ -70,7 +70,43 @@ class MultimodalTransformer(nn.Module):
         self.bb_fc = nn.Linear(4 + bb_label_emb_dim, hidden_dim)
 
         self.tokenizer = BioGptTokenizer.from_pretrained("microsoft/biogpt")
-        self.token_emb = TokenEmbedding(self.tokenizer.vocab_size, hidden_dim)
+
+        sep_tokens = [
+            "<IMG>",
+            "</IMG>",
+            "<REPORT>",
+            "</REPORT>",
+            "<CLINICAL>",
+            "</CLINICAL>",
+            "<CHEXPERT>",
+            "</CHEXPERT>",
+            "<BB>",
+            "</BB>",
+        ]
+
+        self.tokenizer.add_tokens(sep_tokens)
+
+        token_id_map = {
+            t: t_id
+            for t, t_id in zip(
+                sep_tokens,
+                self.tokenizer.encode(
+                    sep_tokens,
+                    return_tensors="pt",
+                    add_special_tokens=False,
+                    is_split_into_words=True,
+                )[0],
+            )
+        }
+
+        self.token_emb = TokenEmbedding(len(self.tokenizer), hidden_dim)
+
+        self.token_dict = nn.ParameterDict(
+            {
+                k: nn.Parameter(self.token_emb(v).reshape(-1, 1), requires_grad=True)
+                for k, v in token_id_map.items()  # trainable
+            }
+        )
 
         self.bos_tensor = nn.Parameter(
             data=self.token_emb(torch.tensor([self.tokenizer.bos_token_id])).reshape(
@@ -179,26 +215,56 @@ class MultimodalTransformer(nn.Module):
         for img, bb, c, chexpert, report in zip(
             img_inputs, bb_inputs, clinical_inputs, chexpert_inputs, report_inputs
         ):
+            # cat_list = [
+            #     self.bos_tensor,
+            #     img,
+            #     self.eos_tensor,
+            #     self.bos_tensor,
+            #     c.reshape(self.hidden_dim, -1),
+            #     self.eos_tensor,
+            #     self.bos_tensor,
+            #     chexpert.reshape(self.hidden_dim, -1),
+            #     self.eos_tensor,
+            #     self.bos_tensor,
+            #     report.permute(1, 0),
+            #     self.eos_tensor,
+            # ]
+
+            # if not bb is None and len(bb) > 0:
+            #     cat_list += [
+            #         self.bos_tensor,
+            #         bb.permute(1, 0),
+            #         self.eos_tensor,
+            #     ]
+
             cat_list = [
-                self.bos_tensor,
+                self.token_dict['<IMG>'],
                 img,
-                self.eos_tensor,
-                self.bos_tensor,
-                c.reshape(self.hidden_dim, -1),
-                self.eos_tensor,
-                self.bos_tensor,
-                chexpert.reshape(self.hidden_dim, -1),
-                self.eos_tensor,
-                self.bos_tensor,
+                self.token_dict['</IMG>'],
+
+                self.token_dict['<REPORT>'],
                 report.permute(1, 0),
-                self.eos_tensor,
+                self.token_dict['</REPORT>'],
+
+                self.token_dict['<CLINICAL>'],
+                c.reshape(self.hidden_dim, -1),
+                self.token_dict['</CLINICAL>'],
+
+                self.token_dict['<CHEXPERT>'],
+                chexpert.reshape(self.hidden_dim, -1),
+                self.token_dict['</CHEXPERT>'],
             ]
 
             if not bb is None and len(bb) > 0:
                 cat_list += [
-                    self.bos_tensor,
+                    self.token_dict['<BB>'],
                     bb.permute(1, 0),
-                    self.eos_tensor,
+                    self.token_dict['</BB>']
+                ]
+            else:
+                cat_list += [
+                    self.token_dict['<BB>'],
+                    self.token_dict['</BB>']
                 ]
 
             cat_t = torch.concat(cat_list, dim=1)
